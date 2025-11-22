@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple PDF Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF Lib for editing -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <!-- PDF.js for rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        // Set worker for PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <style>
+        body {
+            background-color: #f1f5f9;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Prevent body scroll, handle in app */
+        }
+        #canvas-container {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            position: relative;
+            margin: 0 auto;
+        }
+        .draggable-item {
+            position: absolute;
+            cursor: grab;
+            border: 1px dashed #3b82f6;
+            background: rgba(255, 255, 255, 0.1); /* Transparent by default */
+            padding: 0;
+            min-width: 20px;
+            min-height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+        }
+        .draggable-item:hover {
+            border-color: #2563eb;
+            z-index: 50;
+        }
+        .draggable-item.active {
+            border: 1px solid #2563eb;
+            z-index: 100;
+        }
+        /* Specific styles for content types */
+        .draggable-item.text-item {
+            background: transparent;
+            padding: 2px;
+        }
+        .draggable-item.image-item {
+            background: transparent;
+        }
+        .draggable-item.whiteout-item {
+            background: white; /* Opaque white to hide content */
+            border: 1px solid #e5e7eb; /* Light gray border to see it while editing */
+        }
+        
+        .draggable-content {
+            width: 100%;
+            height: 100%;
+            outline: none;
+            background: transparent;
+            font-family: Helvetica, sans-serif;
+            color: black;
+            white-space: pre-wrap;
+            cursor: text;
+            overflow: hidden;
+        }
+        .delete-btn {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #ef4444;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            cursor: pointer;
+            display: none;
+            z-index: 101;
+        }
+        .draggable-item:hover .delete-btn {
+            display: flex;
+        }
+        .resize-handle {
+            width: 10px;
+            height: 10px;
+            background: #3b82f6;
+            position: absolute;
+            bottom: -5px;
+            right: -5px;
+            cursor: se-resize;
+            display: none;
+            z-index: 101;
+        }
+        .draggable-item:hover .resize-handle {
+            display: block;
+        }
+        /* Loader */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+
+    <!-- Header / Toolbar -->
+    <header class="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm z-10">
+        <div class="flex items-center gap-3">
+            <div class="bg-blue-600 text-white p-2 rounded-lg">
+                <i class="fas fa-file-pdf text-xl"></i>
+            </div>
+            <h1 class="text-xl font-bold text-gray-800 hidden md:block">PDF Editor</h1>
+        </div>
+
+        <div class="flex items-center gap-2 bg-gray-100 p-1 rounded-lg">
+            <button onclick="changePage(-1)" class="p-2 hover:bg-white rounded-md text-gray-600 transition hover:shadow-sm" title="Previous Page">
+                <i class="fas fa-chevron-left"></i>
+            </button>
+            <span id="page-indicator" class="text-sm font-medium text-gray-600 w-20 text-center">0 / 0</span>
+            <button onclick="changePage(1)" class="p-2 hover:bg-white rounded-md text-gray-600 transition hover:shadow-sm" title="Next Page">
+                <i class="fas fa-chevron-right"></i>
+            </button>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <input type="file" id="pdf-upload" accept=".pdf" class="hidden" onchange="handlePdfUpload(event)">
+            <button onclick="document.getElementById('pdf-upload').click()" class="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium">
+                <i class="fas fa-upload"></i> Upload
+            </button>
+            
+            <div class="h-6 w-px bg-gray-300 mx-1"></div>
+
+            <button onclick="addWhiteout()" class="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium" title="Cover existing content with white box">
+                <i class="fas fa-eraser"></i> Eraser
+            </button>
+
+            <button onclick="addTextAnnotation()" class="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium">
+                <i class="fas fa-font"></i> Text
+            </button>
+            
+            <input type="file" id="image-upload" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+            <button onclick="document.getElementById('image-upload').click()" class="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium">
+                <i class="fas fa-image"></i> Image
+            </button>
+
+            <button onclick="downloadPdf()" class="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium shadow-sm ml-2">
+                <i class="fas fa-download"></i> Save
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 bg-gray-100 overflow-auto flex justify-center p-8 relative" id="main-scroll">
+        
+        <!-- Empty State -->
+        <div id="empty-state" class="flex flex-col items-center justify-center text-gray-400 h-full">
+            <i class="fas fa-file-pdf text-6xl mb-4 text-gray-300"></i>
+            <p class="text-lg font-medium">Upload a PDF to start editing</p>
+            <p class="text-sm">Use "Eraser" to cover old text, then add new text.</p>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loading-state" class="hidden flex-col items-center justify-center absolute inset-0 bg-gray-100 z-50">
+            <div class="loader mb-4"></div>
+            <p class="text-gray-600 font-medium">Processing PDF...</p>
+        </div>
+
+        <!-- Canvas Wrapper -->
+    <div id="canvas-wrapper" class="relative hidden shadow-lg">
+        <canvas id="pdf-canvas" class="block bg-white"></canvas>
+        <div id="annotation-layer" class="absolute inset-0 overflow-hidden"></div>
+    </div>
+
+</main>
+
+<!-- Developer Contact Footer -->
+<footer class="bg-white border-t border-gray-200 px-4 py-2 flex justify-center items-center shadow-sm z-20">
+    <a href="https://whatsapp.com/channel/0029VaCBM8AKGGG9l6g6Lz0b" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 text-gray-600 hover:text-green-600 transition font-medium text-sm">
+        <i class="fab fa-whatsapp text-lg"></i>
+        <span>Developer Contact</span>
+    </a>
+</footer>
+
+<script>
+    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+
+    // State
+        let pdfBytes = null;
+        let pdfDoc = null; // The PDF-Lib document
+        let pdfJsDoc = null; // The PDF.js document
+        let currentPage = 1;
+        let totalPages = 0;
+        let scale = 1.5;
+        let annotations = []; // { type: 'text'|'image'|'whiteout', content: str, x, y, page, width, height }
+
+        const canvas = document.getElementById('pdf-canvas');
+        const ctx = canvas.getContext('2d');
+        const annotationLayer = document.getElementById('annotation-layer');
+        const emptyState = document.getElementById('empty-state');
+        const canvasWrapper = document.getElementById('canvas-wrapper');
+        const loadingState = document.getElementById('loading-state');
+        const pageIndicator = document.getElementById('page-indicator');
+
+        // --- PDF Loading & Rendering ---
+
+        async function handlePdfUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showLoading(true);
+            
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                // Store original bytes for PDF-Lib
+                pdfBytes = arrayBuffer;
+                
+                // Create a copy for PDF.js rendering to avoid "detached ArrayBuffer" errors
+                const pdfJsBytes = arrayBuffer.slice(0);
+                
+                // Load for rendering (PDF.js)
+                pdfJsDoc = await pdfjsLib.getDocument({ data: pdfJsBytes }).promise;
+                totalPages = pdfJsDoc.numPages;
+                
+                // Load for editing (PDF-Lib)
+                pdfDoc = await PDFDocument.load(pdfBytes);
+
+                currentPage = 1;
+                annotations = []; // Clear annotations on new file
+                renderPage(currentPage);
+                
+                emptyState.classList.add('hidden');
+                canvasWrapper.classList.remove('hidden');
+            } catch (error) {
+                console.error("Error loading PDF:", error);
+                alert("Error loading PDF. Please try another file.");
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function renderPage(num) {
+            if (!pdfJsDoc) return;
+            
+            // Clear current annotations visually (they are stored in state)
+            annotationLayer.innerHTML = '';
+
+            const page = await pdfJsDoc.getPage(num);
+            const viewport = page.getViewport({ scale: scale });
+
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+
+            const renderContext = {
+                canvasContext: ctx,
+                viewport: viewport
+            };
+
+            await page.render(renderContext).promise;
+            
+            pageIndicator.textContent = `${currentPage} / ${totalPages}`;
+
+            // Restore annotations for this page
+            restoreAnnotationsForPage(num);
+        }
+
+        function changePage(delta) {
+            if (!pdfJsDoc) return;
+            const newPage = currentPage + delta;
+            if (newPage >= 1 && newPage <= totalPages) {
+                currentPage = newPage;
+                renderPage(currentPage);
+            }
+        }
+
+        function showLoading(show) {
+            if (show) loadingState.classList.replace('hidden', 'flex');
+            else loadingState.classList.replace('flex', 'hidden');
+        }
+
+        // --- Annotation Logic ---
+
+        function addTextAnnotation() {
+            if (!pdfDoc) return alert("Please upload a PDF first.");
+            createDraggableElement('text', 'New Text', currentPage, 100, 100);
+        }
+
+        function addWhiteout() {
+            if (!pdfDoc) return alert("Please upload a PDF first.");
+            createDraggableElement('whiteout', '', currentPage, 100, 100, 100, 30);
+        }
+
+        async function handleImageUpload(event) {
+            if (!pdfDoc) return alert("Please upload a PDF first.");
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                createDraggableElement('image', e.target.result, currentPage, 100, 100);
+            }
+            reader.readAsDataURL(file);
+            // Reset input
+            event.target.value = '';
+        }
+
+        function createDraggableElement(type, content, pageNum, x, y, width, height, id = null) {
+            const elId = id || Date.now().toString();
+            
+            const wrapper = document.createElement('div');
+            wrapper.className = 'draggable-item';
+            wrapper.style.left = x + 'px';
+            wrapper.style.top = y + 'px';
+            wrapper.dataset.id = elId;
+            
+            if (width) wrapper.style.width = width + 'px';
+            if (height) wrapper.style.height = height + 'px';
+
+            // Apply specific styles
+            if (type === 'text') wrapper.classList.add('text-item');
+            else if (type === 'image') wrapper.classList.add('image-item');
+            else if (type === 'whiteout') wrapper.classList.add('whiteout-item');
+
+            // Content
+            if (type === 'text') {
+                const textDiv = document.createElement('div');
+                textDiv.className = 'draggable-content';
+                textDiv.contentEditable = true;
+                textDiv.innerText = content;
+                textDiv.style.fontSize = '16px'; // Default visual size
+                wrapper.appendChild(textDiv);
+            } else if (type === 'image') {
+                const img = document.createElement('img');
+                img.src = content;
+                img.className = 'draggable-content';
+                img.style.pointerEvents = 'none'; // Let clicks pass to wrapper for drag
+                img.style.objectFit = 'contain';
+                wrapper.appendChild(img);
+                if (!width) wrapper.style.width = '150px'; 
+            } 
+            // Whiteout has no content element, just the background
+
+            // Delete Button
+            const deleteBtn = document.createElement('div');
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.innerHTML = '<i class="fas fa-times"></i>';
+            deleteBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeAnnotation(elId);
+                wrapper.remove();
+            };
+            wrapper.appendChild(deleteBtn);
+
+            // Resize Handle (Bottom Right)
+            const resizer = document.createElement('div');
+            resizer.className = 'resize-handle';
+            wrapper.appendChild(resizer);
+
+            // Add to DOM if on current page
+            if (pageNum === currentPage) {
+                annotationLayer.appendChild(wrapper);
+            }
+
+            // Setup Drag and Resize events
+            setupInteractions(wrapper, resizer, elId, type, pageNum);
+
+            // Save initial state if new
+            if (!id) {
+                 updateAnnotationState(elId, type, content, pageNum, x, y, wrapper.offsetWidth, wrapper.offsetHeight);
+            }
+        }
+
+        function setupInteractions(wrapper, resizer, id, type, pageNum) {
+            let isDragging = false;
+            let isResizing = false;
+            let startX, startY, startLeft, startTop, startWidth, startHeight;
+
+            // Mouse Down on Wrapper (Drag)
+            wrapper.onmousedown = function(e) {
+                if (e.target.className.includes('resize-handle') || e.target.isContentEditable) return;
+                
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                startLeft = wrapper.offsetLeft;
+                startTop = wrapper.offsetTop;
+                wrapper.classList.add('active');
+                
+                document.onmousemove = onDrag;
+                document.onmouseup = stopDrag;
+            };
+
+            function onDrag(e) {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                wrapper.style.left = (startLeft + dx) + "px";
+                wrapper.style.top = (startTop + dy) + "px";
+            }
+
+            function stopDrag() {
+                isDragging = false;
+                wrapper.classList.remove('active');
+                document.onmousemove = null;
+                document.onmouseup = null;
+                updateCurrentState();
+            }
+
+            // Mouse Down on Resizer
+            resizer.onmousedown = function(e) {
+                e.stopPropagation();
+                isResizing = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                startWidth = wrapper.offsetWidth;
+                startHeight = wrapper.offsetHeight;
+
+                document.onmousemove = onResize;
+                document.onmouseup = stopResize;
+            };
+
+            function onResize(e) {
+                if (!isResizing) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                wrapper.style.width = (startWidth + dx) + "px";
+                if (type === 'text') wrapper.style.height = 'auto';
+                else wrapper.style.height = (startHeight + dy) + "px";
+            }
+
+            function stopResize() {
+                isResizing = false;
+                document.onmousemove = null;
+                document.onmouseup = null;
+                updateCurrentState();
+            }
+
+            function updateCurrentState() {
+                let content = '';
+                if (type === 'text') content = wrapper.querySelector('.draggable-content').innerText;
+                else if (type === 'image') content = wrapper.querySelector('img').src;
+                
+                updateAnnotationState(id, type, content, pageNum, wrapper.offsetLeft, wrapper.offsetTop, wrapper.offsetWidth, wrapper.offsetHeight);
+            }
+
+            // Text Change Listener
+            if (type === 'text') {
+                const contentDiv = wrapper.querySelector('.draggable-content');
+                contentDiv.addEventListener('input', updateCurrentState);
+            }
+        }
+
+        function updateAnnotationState(id, type, content, page, x, y, width, height) {
+            const index = annotations.findIndex(a => a.id === id);
+            const data = { id, type, content, page, x, y, width, height };
+            if (index > -1) {
+                annotations[index] = data;
+            } else {
+                annotations.push(data);
+            }
+        }
+
+        function removeAnnotation(id) {
+            annotations = annotations.filter(a => a.id !== id);
+        }
+
+        function restoreAnnotationsForPage(pageNum) {
+            const pageAnnotations = annotations.filter(a => a.page === pageNum);
+            pageAnnotations.forEach(a => {
+                createDraggableElement(a.type, a.content, a.page, a.x, a.y, a.width, a.height, a.id);
+            });
+        }
+
+        // --- Saving Logic ---
+
+        async function downloadPdf() {
+            if (!pdfDoc) return;
+            showLoading(true);
+
+            try {
+                const pages = pdfDoc.getPages();
+                const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+                // Sort annotations: whiteout first, then images, then text (Painter's algorithm)
+                const sortedAnnotations = [...annotations].sort((a, b) => {
+                    const order = { 'whiteout': 0, 'image': 1, 'text': 2 };
+                    return order[a.type] - order[b.type];
+                });
+
+                for (const ann of sortedAnnotations) {
+                    const pdfPage = pages[ann.page - 1];
+                    const { width: pageWidth, height: pageHeight } = pdfPage.getSize();
+                    
+                    // Coordinates: HTML (Top-Left) -> PDF (Bottom-Left)
+                    const x = ann.x / scale;
+                    const y = pageHeight - ((ann.y + ann.height) / scale); // Bottom-left of the element
+                    const w = ann.width / scale;
+                    const h = ann.height / scale;
+
+                    if (ann.type === 'whiteout') {
+                        pdfPage.drawRectangle({
+                            x: ann.x / scale,
+                            y: pageHeight - ((ann.y + ann.height) / scale), // Bottom-left
+                            width: w,
+                            height: h,
+                            color: rgb(1, 1, 1), // White
+                        });
+                    } else if (ann.type === 'text') {
+                         if (!ann.content) continue;
+                        const textSize = 16 / scale * 1.5; 
+                        // Text anchor is usually bottom-left of the first line.
+                        // We approximate Y position to match visual top-left anchor
+                        const visualY = pageHeight - (ann.y / scale) - textSize; 
+
+                        pdfPage.drawText(ann.content, {
+                            x: ann.x / scale,
+                            y: visualY,
+                            size: 14, 
+                            font: helveticaFont,
+                            color: rgb(0, 0, 0),
+                            maxWidth: w
+                        });
+                    } else if (ann.type === 'image') {
+                        if (!ann.content) continue;
+                        let imageEmbed;
+                        try {
+                            if (ann.content.startsWith('data:image/png')) {
+                                imageEmbed = await pdfDoc.embedPng(ann.content);
+                            } else {
+                                imageEmbed = await pdfDoc.embedJpg(ann.content);
+                            }
+                            
+                            pdfPage.drawImage(imageEmbed, {
+                                x: x,
+                                y: y,
+                                width: w,
+                                height: h,
+                            });
+                        } catch (imgErr) {
+                            console.error("Failed to embed image", imgErr);
+                        }
+                    }
+                }
+
+                const pdfBytesSaved = await pdfDoc.save();
+                const blob = new Blob([pdfBytesSaved], { type: 'application/pdf' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'edited_document.pdf';
+                link.click();
+
+            } catch (e) {
+                console.error("Save error:", e);
+                alert("Error saving PDF: " + e.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Init
+        window.addEventListener("dragover", function(e) {
+            e = e || event;
+            e.preventDefault();
+        }, false);
+        window.addEventListener("drop", function(e) {
+            e = e || event;
+            e.preventDefault();
+        }, false);
+
+    </script>
+</body>
+</html>
